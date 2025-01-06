@@ -1,0 +1,410 @@
+setwd("C:/Users/elley/Desktop/MS/dev-causal-inference-main/behavioral_data_analyses")
+
+library(Rmisc)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(sjPlot)
+library(car)
+
+data <- read.csv("anonymized_mining_data.csv") #read in trialwise data
+data$ageScaled <- scale(data$age) #scale age
+data$ageScaledsq <- (data$ageScaled)^2 
+
+data$subject <- as.factor(data$subject) #set subject as a factor
+data$feedback <- as.factor(data$feedback) #set reward as a factor
+data$condition <- as.factor(data$condition) #set condition as a factor
+
+data$condition <- factor(data$condition, labels = c("Robber", "Millionaire", "Sheriff")) #change labels
+data$condition <- factor(data$condition, levels = c("Millionaire", "Robber", "Sheriff")) #change order of levels
+
+data$trial_in_blockScaled <- scale(data$trial_in_block) #scale trial number
+data = data[!is.na(data$usable),] #remove subjects that did not meet accuracy criteria
+data = droplevels(data) # dropping unused factor levels
+
+
+
+#find whether age or age sq model is best
+attributionmodelagelin <- 
+  glmer(latent_guess ~ feedback * condition * ageScaled + (1|subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), data = data) 
+
+attributionmodelagesq <- 
+  glmer(latent_guess ~ feedback * condition * ageScaled + feedback * condition * ageScaledsq +  (1|subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), data = data) 
+
+anova(attributionmodelagelin,attributionmodelagesq)
+
+options("contrasts")
+
+
+
+#fit maximal model
+attributionmodelagesqfbcondslopeint <- 
+  glmer(latent_guess ~ feedback * condition * ageScaled + feedback * condition * ageScaledsq + (feedback*condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(feedback = "contr.sum", condition = "contr.sum"), data = data) 
+
+Anova(attributionmodelagesqfbcondslopeint, type = "III")
+
+
+
+#find whether age or age sq model is best
+learningmodelagelin <- 
+  glmer(optimal_choice ~ trial_in_blockScaled * condition * ageScaled + (1|subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), data = data)
+
+learningmodelagesq <- 
+  glmer(optimal_choice ~ trial_in_blockScaled * condition * ageScaled + trial_in_blockScaled * condition * ageScaledsq + (1|subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), data = data)
+
+anova(learningmodelagelin,learningmodelagesq)
+
+
+
+#fit maximal model
+learningmodelagesqcondtrialslopeint <- glmer(optimal_choice ~ trial_in_blockScaled * condition * ageScaled + trial_in_blockScaled * condition * ageScaledsq + (trial_in_blockScaled * condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(condition = "contr.sum"), data = data) 
+
+Anova(learningmodelagesqcondtrialslopeint, type = "III")
+
+
+
+# Plot attribution
+library(dplyr)
+
+meanattrib = data %>%
+  group_by(subject,age,condition,feedback) %>%
+  summarise(meanlatent_guess = mean(latent_guess))
+
+ggplot(meanattrib, aes(x=age, y=meanlatent_guess, colour=feedback, group=feedback)) +
+  geom_point(size=2) +
+  scale_colour_manual(breaks = c("0","1"), labels = c("Rocks","Gold"), values = c("darkgrey","gold1"), name = "Outcome") +
+  scale_fill_manual(breaks = c("0","1"), labels = c("Rocks","Gold"), values = c("darkgrey","gold1"), guide = FALSE) +
+  stat_smooth(method="glm",formula=y~poly(x,2), fullrange=TRUE, aes(fill=feedback)) +
+  xlab("Age") + #x axis label
+  ylab("Proportion attributed to agent") + #y axis label
+  scale_y_continuous(expand = c(0,0), limits = c(-0.01,1.1)) +
+  theme(title= element_text(size=26, face="bold"),
+        axis.title.x= element_text(size=26, vjust=-0.5),
+        axis.title.y= element_text(size=26, vjust=1.5),
+        axis.text.x= element_text(size=22, colour="black", vjust=0.6, angle = 60),
+        axis.text.y= element_text(size=24, colour="black"),
+        legend.title= element_text(size=24), #no legend, but just in case you need one
+        legend.text= element_text(size=24),
+        #legend.position="none",
+        strip.text = element_text(size=24, face="bold"), #text in strip headings
+        panel.grid.major = element_blank(), #take out grid marks
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) + #diff pre-set themes available, or create your own
+  facet_wrap(~condition) 
+
+
+
+#create 10 trial bins
+data$bin <- ifelse(data$trial_in_block <= 10,"1", ifelse(data$trial_in_block > 10 & data$trial_in_block <= 20, "2", ifelse(data$trial_in_block > 20 & data$trial_in_block <= 30, "3", ifelse(data$trial_in_block > 30 & data$trial_in_block <= 40, "4", "5"))))
+data$bin <- as.factor(data$bin)
+
+meanlearnbin = data %>%
+  group_by(subject,age_group,condition,bin) %>%
+  summarise(meanoptchoice = mean(optimal_choice))
+
+
+
+#generate summary stats for plotting
+meanlearnbin.wstat = summarySE(meanlearnbin, measurevar= "meanoptchoice", groupvars=c("condition","bin","age_group"))
+
+#reorder factors
+meanlearnbin.wstat$age_group <- factor(meanlearnbin.wstat$age_group, levels = c("Kid","Teen","Adult"))
+levels(meanlearnbin.wstat$age_group) <- c("Children", "Adolescents", "Adults")
+
+ggplot(meanlearnbin.wstat, aes(x= bin, y=meanoptchoice, colour=condition)) +
+  geom_point(size = 6, position= position_dodge(width=0.2), aes(colour=condition)) +
+  geom_errorbar(aes(colour=condition, ymin=meanoptchoice-se, ymax=meanoptchoice+se),position = position_dodge(),width =.1, size=1.2)+
+  scale_color_manual(breaks = c("Millionaire", "Robber", "Sheriff"), values = c("lightgreen","indianred1","lightblue3"), name = "Territory") +
+  xlab("Binned trials (10 per bin)") +
+  ylab("Proportion optimal choice") +
+  geom_line(aes(group=condition, colour = condition), size=1.2) + #add a line connecting the dots
+  geom_hline(aes(yintercept=0.5), linetype="dashed") + #add a dashed line at y = 0
+  theme(title= element_text(size=26, vjust=2, face="bold"), #use these settings for titles unless otherwise specified
+        axis.title.x= element_text(size=26, vjust=-0.5),
+        axis.title.y= element_text(size=26, vjust=1.5),
+        axis.text.x= element_text(size=22, colour="black"),
+        axis.text.y= element_text(size=22, colour="black"),
+        legend.title= element_text(size=24), #no legend, but just in case you need one
+        legend.text= element_text(size=24),
+        #legend.position="none",
+        strip.text = element_text(size=24, face="bold"), #text in strip headings
+        panel.grid.major = element_blank(), #take out grid marks
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +
+  facet_wrap(~age_group) +
+  ggtitle("Empirical Data")
+
+
+setwd(dataDir)
+#load full tidyverse
+library(tidyverse)
+
+#Read in simulated data
+simDataRealParams <- read_csv("accTable_realParams_sims.txt")
+
+#first just deal with accuracy
+simAccDataRealParams <- simDataRealParams[c(1:9, 19:27, 37:45)]
+simAccDataRealParams$bin <- 1:5
+
+#Get in tidy format by gathering acc
+tempRP <- gather(simAccDataRealParams, key = "condition", value = "acc", oneLR_robberAcc_adultSims, oneLR_millionaireAcc_adultSims, oneLR_sheriffAcc_adultSims, bayes_robberAcc_adultSims, bayes_millionaireAcc_adultSims, bayes_sheriffAcc_adultSims, bayesadapt_robberAcc_adultSims, bayesadapt_millionaireAcc_adultSims, bayesadapt_sheriffAcc_adultSims, oneLR_robberAcc_teenSims, oneLR_millionaireAcc_teenSims, oneLR_sheriffAcc_teenSims, bayes_robberAcc_teenSims, bayes_millionaireAcc_teenSims, bayes_sheriffAcc_teenSims, bayesadapt_robberAcc_teenSims, bayesadapt_millionaireAcc_teenSims, bayesadapt_sheriffAcc_teenSims, oneLR_robberAcc_kidSims, oneLR_millionaireAcc_kidSims, oneLR_sheriffAcc_kidSims, bayes_robberAcc_kidSims, bayes_millionaireAcc_kidSims, bayes_sheriffAcc_kidSims, bayesadapt_robberAcc_kidSims, bayesadapt_millionaireAcc_kidSims, bayesadapt_sheriffAcc_kidSims)
+
+#separate condition column into multiple columns
+temp2RP <- separate(tempRP, condition, into = c("Model", "Environment", "AgeGroup"), sep = "_")
+
+#remove "acc" from factor name
+temp3RP <- separate(temp2RP, Environment, into = c("Environment", "drop"), sep = "A") %>%
+  select(-drop)
+
+temp3RP <- separate(temp3RP, AgeGroup, into = c("AgeGroup", "drop"), sep = "S") %>%
+  select(-drop)
+
+
+simAccDataRealParams <- temp3RP
+
+#Repeat for error
+simErrorDataRealParams <- simDataRealParams[c(10:18, 28:36, 46:55)]
+
+#gather error
+tempRP <- gather(simErrorDataRealParams, key = "condition", value = "error", oneLR_robberAccErr_adultSims, oneLR_millionaireAccErr_adultSims, oneLR_sheriffAccErr_adultSims, bayes_robberAccErr_adultSims, bayes_millionaireAccErr_adultSims, bayes_sheriffAccErr_adultSims, bayesadapt_robberAccErr_adultSims, bayesadapt_millionaireAccErr_adultSims, bayesadapt_sheriffAccErr_adultSims, oneLR_robberAccErr_teenSims, oneLR_millionaireAccErr_teenSims, oneLR_sheriffAccErr_teenSims, bayes_robberAccErr_teenSims, bayes_millionaireAccErr_teenSims, bayes_sheriffAccErr_teenSims, bayesadapt_robberAccErr_teenSims, bayesadapt_millionaireAccErr_teenSims, bayesadapt_sheriffAccErr_teenSims, oneLR_robberAccErr_kidSims, oneLR_millionaireAccErr_kidSims, oneLR_sheriffAccErr_kidSims, bayes_robberAccErr_kidSims, bayes_millionaireAccErr_kidSims, bayes_sheriffAccErr_kidSims, bayesadapt_robberAccErr_kidSims, bayesadapt_millionaireAccErr_kidSims, bayesadapt_sheriffAccErr_kidSims)
+
+#separate condition column into multiple columns
+temp2RP <- separate(tempRP, condition, into = c("Model", "Environment", "AgeGroup"), sep = "_")
+
+#remove "AccError" from factor name
+temp3RP <- separate(temp2RP, Environment, into = c("Environment", "drop"), sep = "A") %>%
+  select(-drop)
+
+temp3RP <- separate(temp3RP, AgeGroup, into = c("AgeGroup", "drop"), sep = "S") %>%
+  select(-drop)
+
+simErrorDataRealParams <- temp3RP
+
+#merge sim error data and sim acc data
+simDataRealParams <- merge(simAccDataRealParams, simErrorDataRealParams, by = c("bin", "Environment", "Model", "AgeGroup"))
+
+#reorder model factors
+simDataRealParams$Model <- as.factor(simDataRealParams$Model) %>%
+  fct_relevel("oneLR", "bayesadapt", "bayes")
+
+simDataRealParams$AgeGroup <- as.factor(simDataRealParams$AgeGroup) %>%
+  fct_relevel("kid", "teen", "adult")
+
+simDataRealParams_oneLR <- subset(simDataRealParams, Model=="oneLR")
+simDataRealParams_bayesadapt <- subset(simDataRealParams, Model=="bayesadapt")
+simDataRealParams_bayes <- subset(simDataRealParams, Model=="bayes")
+
+facet_names <- c('kid' = 'Children', 'teen' = 'Adolescents', 'adult' = 'Adults')
+
+#plot
+ggplot(simDataRealParams_oneLR, aes(x= bin, y=acc)) +
+  geom_point(size = 6, position= position_dodge(width=0.2), aes(color=Environment)) +
+  geom_errorbar(aes(color=Environment, ymin=acc-error, ymax=acc+error),position = position_dodge(),width =.1, size=1.2) +
+  scale_color_manual(values = c("lightgreen","indianred1","lightblue3"), name = "Territory", breaks=c("millionaire", "robber", "sheriff"), labels=c("Millionaire", "Robber", "Sheriff")) +
+  xlab("Binned trials (10 per bin)") +
+  ylab("Proportion optimal choice") +
+  scale_x_continuous(labels= c("1", "2", "3","4", "5"))   +
+  geom_line(aes(group=Environment, colour = Environment), size=1.2) + #add a line connecting the dots
+  geom_hline(aes(yintercept=0.5), linetype="dashed") + #add a dashed line at y = 0
+  theme(title= element_text(size=26, vjust=2, face="bold"), #use these settings for titles unless otherwise specified
+        axis.title.x= element_text(size=26, vjust=-0.5),
+        axis.title.y= element_text(size=26, vjust=1.5),
+        axis.text.x= element_text(size=22, colour="black"),
+        axis.text.y= element_text(size=22, colour="black"),
+        legend.title= element_text(size=24), #no legend, but just in case you need one
+        legend.text= element_text(size=24),
+        #legend.position="none",
+        strip.text = element_text(size=24, face="bold"), #text in strip headings
+        panel.grid.major = element_blank(), #take out grid marks
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +
+  facet_grid(~ AgeGroup, labeller = as_labeller(facet_names)) +
+  ggtitle("Simulated One Learning Rate Data")
+
+ggplot(simDataRealParams_bayesadapt, aes(x= bin, y=acc)) +
+  geom_point(size = 6, position= position_dodge(width=0.2), aes(color=Environment)) +
+  geom_errorbar(aes(color=Environment, ymin=acc-error, ymax=acc+error),position = position_dodge(),width =.1, size=1.2) +
+  scale_color_manual(values = c("lightgreen","indianred1","lightblue3"), name = "Territory", breaks=c("millionaire", "robber", "sheriff"), labels=c("Millionaire", "Robber", "Sheriff")) +
+  xlab("Binned trials (10 per bin)") +
+  ylab("Proportion optimal choice") +
+  scale_x_continuous(labels= c("1", "2", "3","4", "5"))   +
+  geom_line(aes(group=Environment, colour = Environment), size=1.2) + #add a line connecting the dots
+  geom_hline(aes(yintercept=0.5), linetype="dashed") + #add a dashed line at y = 0
+  theme(title= element_text(size=26, vjust=2, face="bold"), #use these settings for titles unless otherwise specified
+        axis.title.x= element_text(size=26, vjust=-0.5),
+        axis.title.y= element_text(size=26, vjust=1.5),
+        axis.text.x= element_text(size=22, colour="black"),
+        axis.text.y= element_text(size=22, colour="black"),
+        legend.title= element_text(size=24), #no legend, but just in case you need one
+        legend.text= element_text(size=24),
+        #legend.position="none",
+        strip.text = element_text(size=24, face="bold"), #text in strip headings
+        panel.grid.major = element_blank(), #take out grid marks
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +
+  facet_grid(~ AgeGroup, labeller = as_labeller(facet_names)) +
+  ggtitle("Simulated Adaptive Bayesian Data")
+
+ggplot(simDataRealParams_bayes, aes(x= bin, y=acc)) +
+  geom_point(size = 6, position= position_dodge(width=0.2), aes(color=Environment)) +
+  geom_errorbar(aes(color=Environment, ymin=acc-error, ymax=acc+error),position = position_dodge(),width =.1, size=1.2) +
+  scale_color_manual(values = c("lightgreen","indianred1","lightblue3"), name = "Territory", breaks=c("millionaire", "robber", "sheriff"), labels=c("Millionaire", "Robber", "Sheriff")) +
+  xlab("Binned trials (10 per bin)") +
+  ylab("Proportion optimal choice") +
+  scale_x_continuous(labels= c("1", "2", "3","4", "5"))   +
+  geom_line(aes(group=Environment, colour = Environment), size=1.2) + #add a line connecting the dots
+  geom_hline(aes(yintercept=0.5), linetype="dashed") + #add a dashed line at y = 0
+  theme(title= element_text(size=26, vjust=2, face="bold"), #use these settings for titles unless otherwise specified
+        axis.title.x= element_text(size=26, vjust=-0.5),
+        axis.title.y= element_text(size=26, vjust=1.5),
+        axis.text.x= element_text(size=22, colour="black"),
+        axis.text.y= element_text(size=22, colour="black"),
+        legend.title= element_text(size=24), #no legend, but just in case you need one
+        legend.text= element_text(size=24),
+        #legend.position="none",
+        strip.text = element_text(size=24, face="bold"), #text in strip headings
+        panel.grid.major = element_blank(), #take out grid marks
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +
+  facet_grid(~ AgeGroup, labeller = as_labeller(facet_names)) +
+  ggtitle("Simulated Empirical Bayesian Data")
+
+
+data$trial_numScaled <- scale(data$trial_num)
+
+attributionmodelagesqfbcondslopeintwtrial <- glmer(latent_guess ~ feedback * condition * ageScaled + feedback * condition * ageScaledsq + trial_numScaled + (feedback*condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(feedback = "contr.sum", condition = "contr.sum"), data = data)
+
+Anova(attributionmodelagesqfbcondslopeintwtrial, type = "III")
+
+attributionmodelagesqfbcondslopeintwtrialint <- glmer(latent_guess ~ feedback * condition * ageScaled * trial_numScaled + feedback * condition * ageScaledsq * trial_numScaled + (feedback*condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(feedback = "contr.sum", condition = "contr.sum"), data = data) #does not converge
+
+
+#First conditions
+#Version A = Robber 
+#Version B = Millionaire
+#Version C = Sheriff
+#Version D = Robber
+#Version E = Millionaire
+#Version F = Sheriff
+
+data$firstcondition <- ifelse(data$version == "A" | data$version == "D" | data$version == "d","Robber", ifelse(data$version == "b" | data$version == "B" | data$version == "E", "Millionaire", "Sheriff"))
+
+data$firstcondition <- as.factor(data$firstcondition)
+
+learningCondOrdermodelagesqcondtrialslopeint <- glmer(optimal_choice ~ trial_in_blockScaled * condition * ageScaled +  trial_in_blockScaled * condition * ageScaledsq + firstcondition + (trial_in_blockScaled * condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(condition = "contr.sum", firstcondition = "contr.sum"), data = data) #converges
+
+Anova(learningCondOrdermodelagesqcondtrialslopeint, type = "III")
+
+data$version[data$version == "b"] <- "B"
+data$version[data$version == "c"] <- "C"
+data$version[data$version == "d"] <- "D"
+
+data <- droplevels(data)
+
+learningversionmodelagesqcondtrialslopeint <- glmer(optimal_choice ~ trial_in_blockScaled * condition * ageScaled +  trial_in_blockScaled * condition * ageScaledsq + version + (trial_in_blockScaled * condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(condition = "contr.sum", version = "contr.sum"), data = data) #convergea
+
+Anova(learningversionmodelagesqcondtrialslopeint, type = "III")
+
+
+data$block <- as.factor(data$block_num)
+
+#learninggeneralizmodelagesqcondtrialslopeint <- glmer(optimal_choice ~ trial_in_blockScaled * condition * ageScaled * block * firstcondition +  trial_in_blockScaled * condition * ageScaledsq * block * firstcondition + (trial_in_blockScaled * condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(condition = "contr.sum", block = "contr.sum", firstcondition = "contr.sum" ), data = data) #does not converge
+
+#learninggeneralizmodelagesqcondtrialslopeint <- glmer(optimal_choice ~ trial_in_blockScaled * condition * ageScaled +  trial_in_blockScaled * condition * ageScaledsq + block * firstcondition + (trial_in_blockScaled * condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(condition = "contr.sum", block = "contr.sum", firstcondition = "contr.sum" ), data = data) #does not converge
+
+learninggeneralizmodelagesqcondtrialslopeint <- glmer(optimal_choice ~ trial_in_blockScaled * condition * ageScaled +  trial_in_blockScaled * condition * ageScaledsq + block + firstcondition + (trial_in_blockScaled * condition||subject), family=binomial, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(condition = "contr.sum", block = "contr.sum", firstcondition = "contr.sum" ), data = data) #converges
+
+Anova(learninggeneralizmodelagesqcondtrialslopeint , type = "III")
+
+
+meanlearngenbin = data %>%
+  group_by(subject, bin, block) %>%
+  summarise(meanoptchoice = mean(optimal_choice))
+
+#generate summary stats for plotting
+meanlearngenbin.wstat = summarySE(meanlearngenbin, measurevar= "meanoptchoice", groupvars=c("bin", "block"))
+
+ggplot(meanlearngenbin.wstat, aes(x= bin, y=meanoptchoice, colour=block)) +
+  geom_point(size = 6, position= position_dodge(width=0.2), aes(colour=block)) +
+  geom_errorbar(aes(colour=block, ymin=meanoptchoice-se, ymax=meanoptchoice+se),position = position_dodge(),width =.1, size=1.2)+
+  xlab("Binned trials (10 per bin)") +
+  ylab("Proportion optimal choice") +
+  geom_line(aes(group=block, colour = block), size=1.2) + #add a line connecting the dots
+  geom_hline(aes(yintercept=0.5), linetype="dashed") + #add a dashed line at y = 0
+  theme(title= element_text(size=26, vjust=2, face="bold"), #use these settings for titles unless otherwise specified
+        axis.title.x= element_text(size=26, vjust=-0.5),
+        axis.title.y= element_text(size=26, vjust=1.5),
+        axis.text.x= element_text(size=22, colour="black"),
+        axis.text.y= element_text(size=22, colour="black"),
+        legend.title= element_text(size=24), #no legend, but just in case you need one
+        legend.text= element_text(size=24),
+        #legend.position="none",
+        strip.text = element_text(size=24, face="bold"), #text in strip headings
+        panel.grid.major = element_blank(), #take out grid marks
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) 
+
+
+
+data$choiceRTlog <- log(data$choice_RT)
+data$trial_numScaled <- scale(data$trial_num)
+
+learningRTmodelagelin <- lmer(choiceRTlog ~ trial_numScaled * condition * ageScaled + (1|subject), control = lmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), data = data)
+
+learningRTmodelagesq <- lmer(choiceRTlog ~ trial_numScaled * condition * ageScaled +  trial_numScaled * condition * ageScaledsq + (1|subject), control = lmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), data = data)
+
+anova(learningRTmodelagelin,learningRTmodelagesq) #age-sq model preferred
+
+learningRTmodelagesqcondtrialslopeint <- lmer(choiceRTlog ~ trial_numScaled * condition * ageScaled +  trial_numScaled * condition * ageScaledsq + (trial_numScaled * condition||subject), control = lmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e6)), contrasts = list(condition = "contr.sum"), data = data) 
+
+Anova(learningRTmodelagesqcondtrialslopeint, type = "III")
+
+
+plot_model(learningRTmodelagesqcondtrialslopeint, type = "pred", terms = c("trial_numScaled")) +
+  ylab("Log transformed reaction times") +
+  xlab("Trial number") +
+  scale_x_continuous(breaks = c(-1.720461, 0, 1.721216), labels = c(1,75,150)) +
+  theme(title= element_text(size=26, vjust=2, face="bold"), #use these settings for titles unless otherwise specified
+        axis.title.x= element_text(size=26, vjust=-0.5),
+        axis.title.y= element_text(size=26, vjust=1.5),
+        axis.text.x= element_text(size=24, colour="black"),
+        axis.text.y= element_text(size=24, colour="black"),
+        legend.title= element_text(size=24), #no legend, but just in case you need one
+        legend.text= element_text(size=24),
+        #legend.position="none",
+        strip.text = element_text(size=24, face="bold"), #text in strip headings
+        panel.grid.major = element_blank(), #take out grid marks
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +#diff pre-set themes available, or create your own
+  ggtitle("Predicted Probabilities")
+
+plot_model(learningRTmodelagesqcondtrialslopeint, type = "pred", terms = c("ageScaled")) +
+  ylab("Log transformed reaction times") +
+  xlab("Age") +
+  scale_x_continuous(breaks = c(-1.676, 0.0392, 1.727), labels = c(7,16,25)) +
+  theme(title= element_text(size=26, vjust=2, face="bold"), #use these settings for titles unless otherwise specified
+        axis.title.x= element_text(size=26, vjust=-0.5),
+        axis.title.y= element_text(size=26, vjust=1.5),
+        axis.text.x= element_text(size=24, colour="black"),
+        axis.text.y= element_text(size=24, colour="black"),
+        legend.title= element_text(size=24), #no legend, but just in case you need one
+        legend.text= element_text(size=24),
+        #legend.position="none",
+        strip.text = element_text(size=24, face="bold"), #text in strip headings
+        panel.grid.major = element_blank(), #take out grid marks
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +#diff pre-set themes available, or create your own
+  ggtitle("Predicted Probabilities")
+
+
+for (i in 1:4) {
+  print(i)
+}
